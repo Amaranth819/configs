@@ -4,8 +4,8 @@
 
 init.el
 
-- **Python**: conda environment switch + autocomplete + vscode-like syntax highlighting (install python support with "M-x treesit-install-language-grammar RET python RET" after installing tree-sitter)
-- **Videos**: directly open videos externally in dired
+- **Python**: conda environment switch + autocomplete + vscode-like syntax highlighting (install python support with "M-x treesit-install-language-grammar RET python RET" after installing tree-sitter). Both local and remote conda environments are supported. To enable autocomplete in a conda environment, install python-lsp-server, then type C-c e to select the environment.
+- **Videos**: directly open videos externally in dired (previewing videos on the remote server is implemented)
 - **Dashboard appearance**: recently opened folders
 - **Codex**: Install codex CLI in Ubuntu with "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
 

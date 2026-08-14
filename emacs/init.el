@@ -158,12 +158,12 @@
 ;; ================================
 
 (defun my-video-file-p (file)
-  (string-prefix-p
-   "video/"
-   (string-trim
-    (shell-command-to-string
-     (format "file --mime-type -b %s"
-             (shell-quote-argument file))))))
+  "Return non-nil if FILE looks like a video."
+  (let ((ext (downcase (or (file-name-extension file) ""))))
+    (member ext
+            '("mp4" "mkv" "avi" "mov" "webm"
+              "m4v" "mpg" "mpeg" "wmv" "flv"
+              "ts" "mts" "m2ts"))))
 
 (defun my-dired-open-file ()
   (interactive)
@@ -173,9 +173,9 @@
      ((file-directory-p file)
       (dired-find-file))
 
-     ;; Video -> external application
+     ;; Video
      ((my-video-file-p file)
-      (start-process "xdg-open" nil "xdg-open" file))
+      (my-play-video file))
 
      ;; Everything else -> Emacs
      (t
@@ -224,24 +224,54 @@
 
     (force-mode-line-update t)))
 
-(global-set-key (kbd "C-c e") #'my-conda-select-environment)
+;; Use one command for both local and TRAMP buffers.
+;; The remote selector is defined later in this file; that is fine because
+;; this function is only called interactively after init.el finishes loading.
+(defun my-conda-select-environment-smart ()
+  "Select the Conda environment for the current context.
+Use the remote host's Conda environments in a TRAMP buffer; otherwise use
+the local Conda environments managed by conda.el."
+  (interactive)
+  (if (file-remote-p default-directory)
+      (my-tramp-select-conda-environment)
+    (my-conda-select-environment)))
+
+(global-set-key (kbd "C-c e") #'my-conda-select-environment-smart)
 
 
 ;; Clickable mode-line entry.
 (defvar my-conda-mode-line-map
   (let ((map (make-sparse-keymap)))
     (define-key map [mode-line mouse-1]
-                #'my-conda-select-environment)
+                #'my-conda-select-environment-smart)
     map))
 
 
+(defun my-conda-prefix-display-name (prefix)
+  "Return a short display name for a Conda PREFIX."
+  (cond
+   ((not prefix) "none")
+   ((string-match "/envs/\\([^/]+\\)/?\\'" prefix)
+    (match-string 1 prefix))
+   (t "base")))
+
 (defun my-conda-mode-line-text ()
-  (propertize
-   (format " Conda:%s "
-           (or conda-env-current-name "none"))
-   'help-echo "Click to select Conda environment"
-   'mouse-face 'mode-line-highlight
-   'local-map my-conda-mode-line-map))
+  (let ((name
+         (if (file-remote-p default-directory)
+             ;; my-tramp-conda-prefix is defined later in this file.
+             (if (fboundp 'my-tramp-conda-prefix)
+                 (my-conda-prefix-display-name
+                  (my-tramp-conda-prefix))
+               "none")
+           (or conda-env-current-name "none"))))
+    (propertize
+     (format " Conda:%s " name)
+     'help-echo
+     (if (file-remote-p default-directory)
+         "Click to select Conda environment on this remote host"
+       "Click to select local Conda environment")
+     'mouse-face 'mode-line-highlight
+     'local-map my-conda-mode-line-map)))
 
 
 ;; Always display the Conda selector in the mode line.
@@ -423,3 +453,212 @@
 (add-to-list 'major-mode-remap-alist
              '(python-mode . python-ts-mode))
 (setq treesit-font-lock-level 4)
+
+
+
+;; ================================
+;; TRAMP remote videos -> local mpv
+;; ================================
+
+(require 'tramp)
+
+(defun my-video-file-p (file)
+  "Return non-nil if FILE looks like a video."
+  (let ((ext (downcase (or (file-name-extension file) ""))))
+    (member ext
+            '("mp4" "mkv" "avi" "mov" "webm"
+              "m4v" "mpg" "mpeg" "wmv" "flv"
+              "ts" "mts" "m2ts"))))
+
+
+(defun my-tramp-to-sftp-url (file)
+  "Convert TRAMP FILE into an SFTP URL."
+  (let* ((vec  (tramp-dissect-file-name file))
+         (user (tramp-file-name-user vec))
+         (host (tramp-file-name-host vec))
+         (port (tramp-file-name-port vec))
+         (path (tramp-file-name-localname vec)))
+    (format "sftp://%s%s%s%s"
+            (if user (concat user "@") "")
+            host
+            (if port (format ":%s" port) "")
+            path)))
+
+
+(defun my-play-video (file)
+  "Play FILE with local mpv."
+  (let ((target
+         (if (file-remote-p file)
+             (my-tramp-to-sftp-url file)
+           file)))
+
+    ;; Force mpv to launch locally.
+    (let ((default-directory temporary-file-directory))
+      (start-process "mpv" nil "mpv" target))))
+
+
+(defun my-dired-open-file ()
+  "Open Dired entry, sending videos to mpv."
+  (interactive)
+
+  (let ((file (dired-get-file-for-visit)))
+    (cond
+
+     ;; Directory
+     ((file-directory-p file)
+      (dired-find-file))
+
+     ;; Video
+     ((my-video-file-p file)
+      (my-play-video file))
+
+     ;; Everything else
+     (t
+      (dired-find-file)))))
+
+
+(with-eval-after-load 'dired
+  (define-key dired-mode-map (kbd "RET")
+              #'my-dired-open-file))
+              
+              
+              
+;; ================================
+;; TRAMP + Remote Conda + Eglot
+;; ================================
+
+(require 'tramp)
+(require 'json)
+(require 'eglot)
+
+;; Remember one selected Conda environment for each remote connection.
+(defvar my-tramp-conda-envs nil)
+
+
+(defun my-tramp-command-output (program &rest args)
+  "Run PROGRAM remotely and return its output."
+  (let ((dir default-directory))
+    (with-temp-buffer
+      (let ((default-directory dir))
+        (let ((status
+               (apply #'process-file program nil t nil args)))
+          (unless (zerop status)
+            (error "Remote command failed: %s" program))
+          (string-trim (buffer-string)))))))
+
+
+(defun my-tramp-find-conda ()
+  "Find Conda executable on the current remote machine."
+  (unless (file-remote-p default-directory)
+    (user-error "Current buffer is not remote"))
+
+  (let ((conda
+         (my-tramp-command-output
+          "sh" "-lc"
+          (concat
+           "command -v conda 2>/dev/null || "
+           "for p in "
+           "\"$HOME/miniconda3/bin/conda\" "
+           "\"$HOME/anaconda3/bin/conda\" "
+           "\"$HOME/miniforge3/bin/conda\" "
+           "\"$HOME/mambaforge/bin/conda\"; "
+           "do "
+           "[ -x \"$p\" ] && echo \"$p\" && break; "
+           "done"))))
+    (if (string-empty-p conda)
+        (user-error "Cannot find Conda on remote server")
+      conda)))
+
+
+(defun my-tramp-conda-prefix ()
+  "Return selected Conda prefix for current remote server."
+  (cdr (assoc (file-remote-p default-directory)
+              my-tramp-conda-envs)))
+
+
+(defun my-tramp-select-conda-environment ()
+  "Select a Conda environment on the current TRAMP host."
+  (interactive)
+
+  (unless (file-remote-p default-directory)
+    (user-error "Current buffer is not remote"))
+
+  (let* ((key (file-remote-p default-directory))
+         (conda (my-tramp-find-conda))
+         (json-object-type 'alist)
+         (json-array-type 'list)
+
+         (data
+          (json-read-from-string
+           (my-tramp-command-output
+            conda "env" "list" "--json")))
+
+         (envs (alist-get 'envs data))
+
+         (choices
+          (mapcar
+           (lambda (env)
+             (cons
+              (format "%s  [%s]"
+                      (my-conda-prefix-display-name env)
+                      env)
+              env))
+           envs))
+
+         (choice
+          (completing-read
+           "Remote Conda environment: "
+           choices nil t))
+
+         (prefix (cdr (assoc choice choices))))
+
+    ;; Remember selection for this remote host.
+    (setq my-tramp-conda-envs
+          (cons
+           (cons key prefix)
+           (assoc-delete-all key my-tramp-conda-envs)))
+
+    (message "Remote Conda: %s" prefix)
+    (force-mode-line-update t)
+
+    ;; If Eglot is already running, completely restart it.
+    (when-let ((server (eglot-current-server)))
+      (eglot-shutdown server)
+      (eglot-ensure))))
+
+
+(defun my-python-eglot-server (&rest _)
+  "Return the correct pylsp command for local or remote Python."
+  (if (file-remote-p default-directory)
+
+      ;; Remote Python
+      (let ((prefix (my-tramp-conda-prefix))
+            (conda (my-tramp-find-conda)))
+
+        ;; Ask for an environment the first time.
+        (unless prefix
+          (call-interactively #'my-tramp-select-conda-environment)
+          (setq prefix (my-tramp-conda-prefix)))
+
+        ;; Run pylsp inside the selected remote Conda environment.
+        (list conda
+              "run"
+              "--no-capture-output"
+              "-p" prefix
+              "pylsp"))
+
+    ;; Local Python
+    '("pylsp")))
+
+
+;; Tell Eglot how to start Python.
+(with-eval-after-load 'eglot
+  (add-to-list
+   'eglot-server-programs
+   `((python-mode python-ts-mode)
+     . ,#'my-python-eglot-server)))
+
+
+;; Start Eglot automatically.
+(add-hook 'python-mode-hook #'eglot-ensure)
+(add-hook 'python-ts-mode-hook #'eglot-ensure)
