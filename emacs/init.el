@@ -662,3 +662,22 @@ the local Conda environments managed by conda.el."
 ;; Start Eglot automatically.
 (add-hook 'python-mode-hook #'eglot-ensure)
 (add-hook 'python-ts-mode-hook #'eglot-ensure)
+
+
+;; ================================
+;; Kill all buffers except internal buffers, then return to dashboard
+;; ================================
+(defun my-close-all-and-dashboard ()
+  "Kill normal user buffers, keep internal buffers, then open Dashboard."
+  (interactive)
+
+  (dolist (buf (buffer-list))
+    (let ((name (buffer-name buf)))
+      ;; Keep internal/special buffers whose names start with *.
+      (unless (string-prefix-p "*" name)
+        (kill-buffer buf))))
+
+  ;; Return to Dashboard.
+  (dashboard-open))
+
+(global-set-key (kbd "C-c k") #'my-close-all-and-dashboard)
