@@ -746,3 +746,15 @@ the local Conda environments managed by conda.el."
   (dashboard-open))
 
 (global-set-key (kbd "C-c k") #'my-close-all-and-dashboard)
+
+
+;; ================================
+;; Speed up TRAMP
+;; ================================
+
+(with-eval-after-load 'tramp
+  ;; Do not run Emacs VC/Git detection on remote files.
+  (setq vc-ignore-dir-regexp
+        (format "\\(%s\\)\\|\\(%s\\)"
+                vc-ignore-dir-regexp
+                tramp-file-name-regexp)))
