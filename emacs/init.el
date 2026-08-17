@@ -80,9 +80,13 @@
 (require 'savehist)
 
 (defvar my-recent-dired-directories nil)
+(defvar my-recent-ssh-connections nil)
 
 (add-to-list 'savehist-additional-variables
              'my-recent-dired-directories)
+
+(add-to-list 'savehist-additional-variables
+             'my-recent-ssh-connections)
 
 (savehist-mode 1)
 
@@ -120,6 +124,60 @@
 
 
 ;; ================================
+;; Recent SSH Connections
+;; ================================
+
+(defun my-ssh-remote-p (file)
+  "Return non-nil if FILE uses an SSH-like TRAMP method."
+  (when (file-remote-p file)
+    (member (file-remote-p file 'method)
+            '("ssh" "sshx" "scp" "scpx" "sftp"))))
+
+(defun my-remember-ssh-connection ()
+  "Remember the SSH/TRAMP connection of the current buffer."
+  (when (my-ssh-remote-p default-directory)
+    (let ((remote (file-remote-p default-directory)))
+      ;; Move current connection to the front.
+      (setq my-recent-ssh-connections
+            (cons remote
+                  (delete remote my-recent-ssh-connections)))
+
+      ;; Keep at most 10 connections.
+      (when (> (length my-recent-ssh-connections) 10)
+        (setcdr (nthcdr 9 my-recent-ssh-connections) nil)))))
+
+;; Remember SSH hosts when opening remote files or Dired directories.
+(add-hook 'find-file-hook #'my-remember-ssh-connection)
+(add-hook 'dired-mode-hook #'my-remember-ssh-connection)
+
+(defun my-ssh-display-name (remote)
+  "Return a short user@host label for REMOTE."
+  (let ((user (file-remote-p remote 'user))
+        (host (file-remote-p remote 'host)))
+    (if user
+        (format "%s@%s" user host)
+      host)))
+
+(defun dashboard-insert-recent-ssh (list-size)
+  "Insert recent SSH connections into Dashboard."
+  (dashboard-insert-section
+   "Recent SSH:"
+   my-recent-ssh-connections
+   list-size
+   'recent-ssh
+   nil
+   ;; RET / mouse click opens the remote home directory.
+   `(lambda (&rest _)
+      (dired (concat ,el "~/")))
+   ;; Display user@host instead of the full TRAMP prefix.
+   (propertize (my-ssh-display-name el)
+               'dashboard-path el)))
+
+(add-to-list 'dashboard-item-generators
+             '(recent-ssh . dashboard-insert-recent-ssh))
+
+
+;; ================================
 ;; Dashboard Appearance
 ;; ================================
 
@@ -130,7 +188,8 @@
 (setq dashboard-vertically-center-content t)
 
 (setq dashboard-items
-      '((recent-dirs . 8)))
+      '((recent-dirs . 8)
+        (recent-ssh  . 5)))
 
 (setq dashboard-show-shortcuts nil)
 
