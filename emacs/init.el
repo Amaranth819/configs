@@ -8,6 +8,12 @@
 
 
 ;; ================================
+;; VS Code / modern-editor style cut, copy, paste, undo
+;; ================================
+(cua-mode 1)
+
+
+;; ================================
 ;; Appearance
 ;; ================================
 ;; Syntax highlighting
